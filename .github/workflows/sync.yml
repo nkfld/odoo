@@ -2,8 +2,8 @@ name: Sync Odoo stock to WooCommerce
 
 on:
   schedule:
-    - cron: "*/15 * * * *"  # Co 15 minut
-  workflow_dispatch:        # Możliwość ręcznego odpalenia
+    - cron: "*/60 * * * *"  # 1 hour
+  workflow_dispatch:        # manual workflow
 
 jobs:
   sync:
