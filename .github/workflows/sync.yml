@@ -21,7 +21,7 @@ jobs:
         
     - name: Install dependencies
       run: |
-        pip install requests xmlrpc3
+        pip install requests
         
     - name: Sync WooCommerce orders to Odoo
       env:
@@ -33,7 +33,7 @@ jobs:
         # Odoo credentials
         ODOO_URL: ${{ secrets.ODOO_URL }}
         ODOO_DB: ${{ secrets.ODOO_DB }}
-        ODOO_USER: ${{ secrets.ODOO_USER }}
+        ODOO_USERNAME: ${{ secrets.ODOO_USERNAME }}
         ODOO_PASSWORD: ${{ secrets.ODOO_PASSWORD }}
         ODOO_LOCATION_ID: ${{ secrets.ODOO_LOCATION_ID }}
         
