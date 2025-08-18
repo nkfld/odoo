@@ -220,7 +220,7 @@ class WooCommerceOdooSync:
             
             # Parametry - tylko zamówienia "processing" lub "completed"
             params = {
-                'status': 'processing,completed',
+                'status': 'completed',
                 'per_page': 50,
                 'orderby': 'id',
                 'order': 'asc'
