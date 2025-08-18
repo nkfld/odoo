@@ -1,136 +1,65 @@
-def create_stock_move_out(self, product_id, quantity, order_number):
-        """
-        Debug każdego kroku żeby zobaczyć gdzie pada
-        """
-        try:
-            print(f"    🔄 KROK 1: Przygotowanie zmiennych")
-            source_location = self.odoo_location_id
-            dest_location = self.get_customer_location()
-            picking_type = self.get_picking_type('outgoing')
-            
-            print(f"    📍 KROK 2: Zmienne OK - Source: {source_location}, Dest: {dest_location}, Type: {picking_type}")
-            
-            # Tworzymy picking (dokument magazynowy)
-            print(f"    🔄 KROK 3: Tworzenie picking...")
-            picking_vals = {
-                'picking_type_id': picking_type,
-                'location_id': source_location,
-                'location_dest_id': dest_location,
-                'origin': f'WooCommerce #{order_number}',
-                'state': 'draft',
-            }
-            
-            picking_id = self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.picking', 'create',
-                [picking_vals]
-            )
-            
-            print(f"    ✅ KROK 4: Picking utworzony ID: {picking_id}")
-            
-            # Tworzymy linię ruchu
-            print(f"    🔄 KROK 5: Tworzenie move...")
-            move_vals = {
-                'name': f'WooCommerce wydanie',
-                'product_id': product_id,
-                'product_uom_qty': quantity,
-                'product_uom': 1,
-                'picking_id': picking_id,
-                'location_id': source_location,
-                'location_dest_id': dest_location,
-                'state': 'draft',
-            }
-            
-            move_id = self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.move', 'create',
-                [move_vals]
-            )
-            
-            print(f"    ✅ KROK 6: Move utworzony ID: {move_id}")
-            
-            # Potwierdzamy picking
-            print(f"    🔄 KROK 7: action_confirm...")
-            self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.picking', 'action_confirm',
-                [picking_id]
-            )
-            
-            print(f"    ✅ KROK 8: action_confirm wykonany")
-            
-            # KONIEC - nie robimy nic więcej
-            print(f"    ✅ KROK 9: Dokument utworzony - ID: {picking_id}")
-            print(f"    📋 Status: Prawdopodobnie 'Ready' - sprawdź w Odoo czy stan się zmienił")
-            
-            return picking_id
-            
-        except Exception as e:
-            print(f"    ❌ BŁĄD w którymś kroku:")
-            print(f"    ❌ Typ: {type(e)}")
-            print(f"    ❌ Komunikat: {str(e)[:300]}...")
-            return False#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Synchronizacja zamówień WooCommerce z Odoo
-Sprawdza nowe zamówienia i zmniejsza stany magazynowe w Odoo
+Sprawdza zamówienia w statusie 'processing' i tworzy wydania magazynowe w Odoo.
 """
 
 import os
 import json
 import xmlrpc.client
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import base64
+
 
 class WooCommerceOdooSync:
     def __init__(self):
-        # WooCommerce config
+        # WooCommerce config (z ENV)
         self.wc_url = os.getenv('WC_URL')
         self.wc_consumer_key = os.getenv('WC_CONSUMER_KEY')
         self.wc_consumer_secret = os.getenv('WC_CONSUMER_SECRET')
-        
-        # Odoo config - sprawdź obie możliwe nazwy dla username
+
+        # Odoo config (z ENV)
         self.odoo_url = os.getenv('ODOO_URL')
         self.odoo_db = os.getenv('ODOO_DB')
-        self.odoo_username = os.getenv('ODOO_USERNAME') or os.getenv('ODOO_USER')  # Obsługa obu nazw
+        self.odoo_username = os.getenv('ODOO_USERNAME') or os.getenv('ODOO_USER')
         self.odoo_password = os.getenv('ODOO_PASSWORD')
-        
-        # Bezpieczne parsowanie ODOO_LOCATION_ID
-        location_id_str = os.getenv('ODOO_LOCATION_ID', '8').strip()
-        if not location_id_str or location_id_str == '':
-            self.odoo_location_id = 8  # Domyślna wartość
-        else:
-            try:
-                self.odoo_location_id = int(location_id_str)
-            except ValueError:
-                print(f"⚠️ Nieprawidłowa wartość ODOO_LOCATION_ID: '{location_id_str}' - używam domyślnej wartości 8")
-                self.odoo_location_id = 8
-        
-        # Wczytaj mapowanie produktów
+
+        # Lokalizacja źródłowa (magazyn) — bezpieczne parsowanie
+        location_id_str = (os.getenv('ODOO_LOCATION_ID', '8') or '8').strip()
+        try:
+            self.odoo_location_id = int(location_id_str)
+        except ValueError:
+            print(f"⚠️ Nieprawidłowa wartość ODOO_LOCATION_ID: '{location_id_str}' - używam domyślnej 8")
+            self.odoo_location_id = 8
+
+        # Wczytaj mapowanie produktów (WC variation_id/product_id -> Odoo barcode)
         self.product_mapping = self.load_product_mapping()
-        
-        # Status tracking file
+
+        # Status (jeśli chcesz trzymać historię – aktualnie resetujemy na starcie run())
         self.status_file = 'last_sync_status.json'
-        
+
         # Odoo connection
         self.odoo_uid = None
         self.odoo_models = None
-        
-        print("🚀 WooCommerce to Odoo Sync - uruchomiony")
-        print(f"📅 Czas: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"🗂️ Załadowano mapowanie dla {len(self.product_mapping)} produktów")
-    
+
+        print("🚀 WooCommerce → Odoo Sync uruchomiony")
+        print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🗂️ Załadowano mapowanie dla {len(self.product_mapping)} pozycji")
+
+    # -------------------- MAPOWANIE --------------------
     def load_product_mapping(self):
-        """Wczytaj mapowanie produktów z pliku JSON"""
+        """Wczytaj mapowanie z pliku product-mapping.json (WC ID -> Odoo barcode)."""
         try:
-            if os.path.exists('product_mapping.json'):
-                with open('product_mapping.json', 'r') as f:
+            path = 'product-mapping.json'  # <= NAZWA Z MYŚLNIKIEM
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
                     mapping = json.load(f)
-                print(f"✅ Wczytano mapowanie z pliku product_mapping.json")
+                print("✅ Wczytano mapowanie z pliku product-mapping.json")
                 return mapping
             else:
-                print("⚠️ Plik product_mapping.json nie istnieje - używam wbudowanego mapowania")
-                # Fallback - wbudowane mapowanie
+                print("⚠️ Brak product-mapping.json – używam wbudowanego, przykładowego mapowania")
+                # Fallback – wstaw tu własne ID wariantów/produktów → barcode
                 return {
                     '13782': '202500000059',
                     '13783': '202500000053',
@@ -185,285 +114,55 @@ class WooCommerceOdooSync:
         except Exception as e:
             print(f"❌ Błąd wczytywania mapowania: {e}")
             return {}
-    
-    def load_last_sync_status(self):
-        """Wczytaj status ostatniej synchronizacji"""
-        try:
-            if os.path.exists(self.status_file):
-                with open(self.status_file, 'r') as f:
-                    return json.load(f)
-            return {'last_order_id': 0, 'processed_orders': []}
-        except Exception as e:
-            print(f"⚠️ Błąd wczytywania statusu: {e}")
-            return {'last_order_id': 0, 'processed_orders': []}
-    
-    def save_sync_status(self, status):
-        """Zapisz status synchronizacji"""
-        try:
-            with open(self.status_file, 'w') as f:
-                json.dump(status, f, indent=2)
-        except Exception as e:
-            print(f"⚠️ Błąd zapisywania statusu: {e}")
-    
+
+    # -------------------- ODOO --------------------
     def connect_odoo(self):
-        """Połącz z Odoo"""
+        """Połącz z Odoo (XML-RPC)."""
         try:
-            print("🔗 Łączenie z Odoo...")
+            print("🔗 Łączenie z Odoo…")
             print(f"📍 URL: {self.odoo_url}")
             print(f"📊 DB: {self.odoo_db}")
             print(f"👤 User: {self.odoo_username}")
-            
-            # Sprawdź czy wszystkie dane są niepuste
-            if not all([self.odoo_url, self.odoo_db, self.odoo_username, self.odoo_password]):
-                missing = []
-                if not self.odoo_url: missing.append('ODOO_URL')
-                if not self.odoo_db: missing.append('ODOO_DB')
-                if not self.odoo_username: missing.append('ODOO_USERNAME/ODOO_USER')
-                if not self.odoo_password: missing.append('ODOO_PASSWORD')
+
+            # Walidacja danych
+            missing = []
+            if not self.odoo_url: missing.append('ODOO_URL')
+            if not self.odoo_db: missing.append('ODOO_DB')
+            if not self.odoo_username: missing.append('ODOO_USERNAME/ODOO_USER')
+            if not self.odoo_password: missing.append('ODOO_PASSWORD')
+            if missing:
                 raise Exception(f"Puste zmienne Odoo: {missing}")
-            
-            # Utwórz połączenie z allow_none=True
-            common = xmlrpc.client.ServerProxy(
-                f'{self.odoo_url}/xmlrpc/2/common',
-                allow_none=True
-            )
-            
-            # Sprawdź wersję Odoo (test połączenia)
+
+            common = xmlrpc.client.ServerProxy(f'{self.odoo_url}/xmlrpc/2/common', allow_none=True)
             try:
                 version_info = common.version()
                 print(f"📋 Wersja Odoo: {version_info.get('server_version', 'nieznana')}")
             except Exception as e:
                 print(f"⚠️ Nie można pobrać wersji Odoo: {e}")
-                print(f"🔍 Sprawdź czy Odoo jest dostępny pod adresem: {self.odoo_url}")
-                raise e
-            
-            # Uwierzytelnienie
-            print("🔐 Próba uwierzytelnienia...")
-            auth_result = common.authenticate(
-                self.odoo_db,
-                self.odoo_username,
-                self.odoo_password,
-                {}
-            )
-            
-            print(f"🔍 Wynik uwierzytelnienia: {auth_result}")
-            
-            if not auth_result:
-                raise Exception("Błąd uwierzytelniania - sprawdź dane logowania (username/password)")
-            
-            self.odoo_uid = auth_result
-            
-            # Utwórz połączenie do modeli
-            self.odoo_models = xmlrpc.client.ServerProxy(
-                f'{self.odoo_url}/xmlrpc/2/object',
-                allow_none=True
-            )
-            
+                raise
+
+            print("🔐 Próba uwierzytelnienia…")
+            uid = common.authenticate(self.odoo_db, self.odoo_username, self.odoo_password, {})
+            print(f"🔍 Wynik uwierzytelnienia: {uid}")
+            if not uid:
+                raise Exception("Błędne dane logowania do Odoo")
+
+            self.odoo_uid = uid
+            self.odoo_models = xmlrpc.client.ServerProxy(f'{self.odoo_url}/xmlrpc/2/object', allow_none=True)
             print(f"✅ Połączono z Odoo (User ID: {self.odoo_uid})")
             return True
-            
+
         except Exception as e:
             print(f"❌ Błąd połączenia z Odoo: {e}")
-            print(f"🔍 Debug info:")
+            print("🔍 Debug info:")
             print(f"   URL: {self.odoo_url}")
             print(f"   DB: {self.odoo_db}")
             print(f"   Username: {self.odoo_username}")
             print(f"   Password length: {len(self.odoo_password) if self.odoo_password else 0}")
             return False
-    
-    def get_woocommerce_orders(self, after_order_id=0):
-        """Pobierz nowe zamówienia z WooCommerce"""
-        try:
-            print(f"📦 Pobieranie zamówień WooCommerce po ID: {after_order_id}")
-            
-            # Endpoint WooCommerce REST API
-            url = f"{self.wc_url}/wp-json/wc/v3/orders"
-            
-            # Autoryzacja Basic Auth
-            auth = base64.b64encode(
-                f"{self.wc_consumer_key}:{self.wc_consumer_secret}".encode()
-            ).decode()
-            
-            headers = {
-                'Authorization': f'Basic {auth}',
-                'Content-Type': 'application/json'
-            }
-            
-            # Parametry - tylko zamówienia "processing"
-            params = {
-                'status': 'processing',
-                'per_page': 50,
-                'orderby': 'id',
-                'order': 'desc'  # Od najnowszych do najstarszych
-            }
-            
-            # Jeśli mamy ostatnie ID, pobierz tylko nowsze
-            if after_order_id > 0:
-                params['after'] = after_order_id
-            
-            response = requests.get(url, headers=headers, params=params, timeout=30)
-            response.raise_for_status()
-            
-            orders = response.json()
-            print(f"📋 Znaleziono {len(orders)} zamówień do przetworzenia")
-            
-            return orders
-            
-        except Exception as e:
-            print(f"❌ Błąd pobierania zamówień WooCommerce: {e}")
-            return []
-    
-    def get_barcode_for_product(self, wc_product_id, item_meta_data):
-        """
-        Pobierz kod kreskowy dla produktu WooCommerce
-        TYLKO z mapowania - jeśli nie ma mapowania, zwróć None
-        """
-        wc_product_id_str = str(wc_product_id)
-        
-        # Sprawdź mapowanie
-        if wc_product_id_str in self.product_mapping:
-            barcode = self.product_mapping[wc_product_id_str]
-            print(f"    📋 Użyto mapowania: WC ID {wc_product_id} → Odoo {barcode}")
-            return barcode
-        
-        # BRAK MAPOWANIA = STOP
-        print(f"    🛑 BRAK MAPOWANIA dla WC ID {wc_product_id} - POMIJAM PRODUKT")
-        return None
 
-    def find_product_in_odoo(self, barcode):
-        """Znajdź produkt w Odoo po kodzie kreskowym"""
-        try:
-            products = self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'product.product', 'search_read',
-                [[['barcode', '=', str(barcode)]]],
-                {'fields': ['id', 'name', 'barcode']}
-            )
-            
-            return products[0] if products else None
-            
-        except Exception as e:
-            print(f"❌ Błąd wyszukiwania produktu {barcode}: {e}")
-            return None
-    
-    def create_stock_move_out(self, product_id, quantity, order_number):
-        """
-        Wydanie towaru - poprawione dla Odoo 17 (quantity_done jest na stock.move.line!)
-        """
-        try:
-            print(f"    🔄 Tworzenie wydania dla produktu {product_id}, ilość: {quantity}")
-            
-            source_location = self.odoo_location_id
-            dest_location = self.get_customer_location()
-            picking_type = self.get_picking_type('outgoing')
-            
-            print(f"    📍 Source: {source_location}, Dest: {dest_location}, Type: {picking_type}")
-            
-            # Tworzymy picking (dokument magazynowy)
-            picking_vals = {
-                'picking_type_id': picking_type,
-                'location_id': source_location,
-                'location_dest_id': dest_location,
-                'origin': f'WooCommerce #{order_number} - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
-                'state': 'draft',
-            }
-            
-            picking_id = self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.picking', 'create',
-                [picking_vals]
-            )
-            
-            print(f"    ✅ Utworzono picking ID: {picking_id}")
-            
-            # Tworzymy linię ruchu
-            move_vals = {
-                'name': f'WooCommerce wydanie',
-                'product_id': product_id,
-                'product_uom_qty': quantity,
-                'product_uom': 1,
-                'picking_id': picking_id,
-                'location_id': source_location,
-                'location_dest_id': dest_location,
-                'state': 'draft',
-            }
-            
-            move_id = self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.move', 'create',
-                [move_vals]
-            )
-            
-            print(f"    ✅ Utworzono move ID: {move_id}")
-            
-            # Potwierdzamy picking
-            self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.picking', 'action_confirm',
-                [picking_id]
-            )
-            
-            print(f"    ✅ Picking potwierdzony")
-            
-            # KRYTYCZNE: W Odoo 17 quantity_done ustawiamy na stock.move.line, NIE na stock.move!
-            # Pobierz move_lines utworzone automatycznie po action_confirm
-            move_lines = self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.move.line', 'search_read',
-                [[['move_id', '=', move_id]]],
-                {'fields': ['id', 'product_id']}
-            )
-            
-            if move_lines:
-                # Ustaw qty_done na move_line (w Odoo 17 to pole jest tu!)
-                for line in move_lines:
-                    self.odoo_models.execute_kw(
-                        self.odoo_db, self.odoo_uid, self.odoo_password,
-                        'stock.move.line', 'write',
-                        [line['id'], {'quantity': quantity}]
-                    )
-                    print(f"    ✅ Ustawiono qty_done={quantity} na move_line #{line['id']}")
-            else:
-                # Jeśli nie ma move_lines, utwórz je ręcznie
-                print(f"    🔄 Brak move_lines - tworzę ręcznie")
-                move_line_vals = {
-                    'move_id': move_id,
-                    'picking_id': picking_id,
-                    'product_id': product_id,
-                    'location_id': source_location,
-                    'location_dest_id': dest_location,
-                    'quantity': quantity,
-                    'product_uom_id': 1
-                }
-                
-                move_line_id = self.odoo_models.execute_kw(
-                    self.odoo_db, self.odoo_uid, self.odoo_password,
-                    'stock.move.line', 'create',
-                    [move_line_vals]
-                )
-                print(f"    ✅ Utworzono move_line #{move_line_id} z qty_done={quantity}")
-            
-            # Walidujemy picking
-            print(f"    🔄 Walidacja picking...")
-            self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.picking', 'button_validate',
-                [picking_id]
-            )
-            
-            print(f"    ✅ Picking zwalidowany! ID: {picking_id}")
-            return picking_id
-            
-        except Exception as e:
-            print(f"    ❌ BŁĄD w create_stock_move_out:")
-            print(f"    ❌ Typ błędu: {type(e)}")
-            print(f"    ❌ Komunikat: {str(e)}")
-            if hasattr(e, 'faultString'):
-                print(f"    ❌ XML-RPC Fault: {e.faultString}")
-            raise e
-    
     def get_customer_location(self):
-        """Pobiera ID lokalizacji klienta - DOKŁADNIE jak w skanerze"""
+        """ID lokalizacji klienta (usage = 'customer')."""
         try:
             locations = self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
@@ -471,17 +170,12 @@ class WooCommerceOdooSync:
                 [[['usage', '=', 'customer']]],
                 {'limit': 1}
             )
-            return locations[0] if locations else 9  # Domyślne ID lokalizacji klienta
-        except:
+            return locations[0] if locations else 9
+        except Exception:
             return 9
-    
+
     def get_picking_type(self, operation_type):
-        """
-        Pobiera typ operacji magazynowej - DOKŁADNIE jak w skanerze
-        
-        Args:
-            operation_type (str): 'incoming' lub 'outgoing'
-        """
+        """Pobiera typ operacji magazynowej ('incoming' lub 'outgoing')."""
         try:
             picking_types = self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
@@ -490,216 +184,348 @@ class WooCommerceOdooSync:
                 {'limit': 1}
             )
             return picking_types[0] if picking_types else 1
-        except:
+        except Exception:
             return 1
-    
+
+    def find_product_in_odoo(self, barcode):
+        """Znajdź produkt w Odoo po kodzie kreskowym."""
+        try:
+            products = self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'product.product', 'search_read',
+                [[['barcode', '=', str(barcode)]]],
+                {'fields': ['id', 'name', 'barcode'], 'limit': 1}
+            )
+            return products[0] if products else None
+        except Exception as e:
+            print(f"❌ Błąd wyszukiwania produktu {barcode}: {e}")
+            return None
+
+    def create_stock_move_out(self, product_id, quantity, order_number):
+        """
+        Wydanie towaru w Odoo 17.
+        Ustawiamy wykonaną ilość na stock.move.line poprzez pole 'quantity'.
+        """
+        try:
+            print(f"    🔄 Tworzenie wydania dla produktu {product_id}, ilość: {quantity}")
+
+            source_location = self.odoo_location_id
+            dest_location = self.get_customer_location()
+            picking_type = self.get_picking_type('outgoing')
+
+            print(f"    📍 Source: {source_location}, Dest: {dest_location}, Type: {picking_type}")
+
+            # 1) Picking
+            picking_vals = {
+                'picking_type_id': picking_type,
+                'location_id': source_location,
+                'location_dest_id': dest_location,
+                'origin': f'WooCommerce #{order_number} - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+                'state': 'draft',
+            }
+            picking_id = self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.picking', 'create', [picking_vals]
+            )
+            print(f"    ✅ Utworzono picking ID: {picking_id}")
+
+            # 2) Move
+            move_vals = {
+                'name': 'WooCommerce wydanie',
+                'product_id': product_id,
+                'product_uom_qty': quantity,
+                'product_uom': 1,  # załóżmy, że to odpowiednia UoM
+                'picking_id': picking_id,
+                'location_id': source_location,
+                'location_dest_id': dest_location,
+                'state': 'draft',
+            }
+            move_id = self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.move', 'create', [move_vals]
+            )
+            print(f"    ✅ Utworzono move ID: {move_id}")
+
+            # 3) Confirm
+            self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.picking', 'action_confirm', [picking_id]
+            )
+            print("    ✅ Picking potwierdzony")
+
+            # 4) Ustaw wykonane ilości na move line (Odoo 17 -> pole 'quantity')
+            move_lines = self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.move.line', 'search_read',
+                [[['move_id', '=', move_id]]],
+                {'fields': ['id', 'product_id']}
+            )
+
+            if move_lines:
+                for line in move_lines:
+                    self.odoo_models.execute_kw(
+                        self.odoo_db, self.odoo_uid, self.odoo_password,
+                        'stock.move.line', 'write',
+                        [line['id'], {'quantity': quantity}]
+                    )
+                    print(f"    ✅ Ustawiono quantity={quantity} na move_line #{line['id']}")
+            else:
+                print("    🔄 Brak move_lines – tworzę ręcznie")
+                move_line_vals = {
+                    'move_id': move_id,
+                    'picking_id': picking_id,
+                    'product_id': product_id,
+                    'location_id': source_location,
+                    'location_dest_id': dest_location,
+                    'quantity': quantity,
+                    'product_uom_id': 1,
+                }
+                move_line_id = self.odoo_models.execute_kw(
+                    self.odoo_db, self.odoo_uid, self.odoo_password,
+                    'stock.move.line', 'create', [move_line_vals]
+                )
+                print(f"    ✅ Utworzono move_line #{move_line_id} z quantity={quantity}")
+
+            # 5) Walidacja
+            print("    🔄 Walidacja pickingu…")
+            self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.picking', 'button_validate', [picking_id]
+            )
+            print(f"    ✅ Picking zwalidowany! ID: {picking_id}")
+            return picking_id
+
+        except Exception as e:
+            print("    ❌ BŁĄD w create_stock_move_out:")
+            print(f"    ❌ Typ błędu: {type(e)}")
+            print(f"    ❌ Komunikat: {str(e)}")
+            if hasattr(e, 'faultString'):
+                print(f"    ❌ XML-RPC Fault: {e.faultString}")
+            raise
+
+    # -------------------- WOO --------------------
+    def get_woocommerce_orders(self, _after_order_id=0):
+        """
+        Pobierz zamówienia WooCommerce w statusie 'processing'.
+        (Bez filtra 'after' po ID – to pole oczekuje daty, nie liczby).
+        """
+        try:
+            print("📦 Pobieranie zamówień WooCommerce…")
+
+            url = f"{self.wc_url}/wp-json/wc/v3/orders"
+            auth = base64.b64encode(f"{self.wc_consumer_key}:{self.wc_consumer_secret}".encode()).decode()
+            headers = {'Authorization': f'Basic {auth}', 'Content-Type': 'application/json'}
+
+            params = {
+                'status': 'processing',
+                'per_page': 50,
+                'orderby': 'id',
+                'order': 'desc'
+            }
+
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response.raise_for_status()
+            orders = response.json()
+            print(f"📋 Znaleziono {len(orders)} zamówień do przetworzenia")
+            return orders
+
+        except Exception as e:
+            print(f"❌ Błąd pobierania zamówień WooCommerce: {e}")
+            return []
+
+    def get_barcode_for_wc_key(self, wc_key, _item_meta_data=None):
+        """
+        Zwróć barcode z mapowania dla klucza WC (variation_id albo product_id).
+        """
+        key = str(wc_key)
+        if key in self.product_mapping:
+            barcode = self.product_mapping[key]
+            print(f"    📋 Mapowanie: WC ID {wc_key} → Odoo {barcode}")
+            return barcode
+        print(f"    🛑 BRAK MAPOWANIA dla WC ID {wc_key} – pomijam")
+        return None
+
+    # -------------------- PRZETWARZANIE --------------------
     def process_order(self, order):
-        """Przetwórz pojedyncze zamówienie"""
+        """Przetwórz pojedyncze zamówienie."""
         order_id = order['id']
         order_number = order['number']
         order_status = order['status']
-        
+
         print(f"\n📋 Przetwarzanie zamówienia #{order_number} (ID: {order_id}, Status: {order_status})")
-        
+
         results = []
-        
+
         for item in order['line_items']:
-            # Używaj tylko product_id
-            wc_variant_id = item.get('variation_id') or item.get('product_id', 0)
-            quantity = item['quantity']
-            product_name = item['name']
-            
-            print(f"  🛍️ Produkt: {product_name} (WC ID: {wc_variant_id}, product_id={item.get('product_id')} ilość: {quantity})")
-            
-            # Jeśli ID = 0, pomiń produkt
-            if product_id == 0:
+            # Klucze z Woo
+            prod_id = item.get('product_id', 0)
+            var_id = item.get('variation_id') or 0
+            wc_key = var_id or prod_id  # preferuj variation_id
+
+            quantity = item.get('quantity', 0)
+            product_name = item.get('name', '')
+
+            print(
+                f"  🛍️ Produkt: {product_name} "
+                f"(WC KEY: {wc_key}, product_id={prod_id}, variation_id={var_id}, ilość: {quantity})"
+            )
+
+            if wc_key == 0 or quantity <= 0:
                 result = {
                     'success': False,
                     'product_name': product_name,
-                    'wc_product_id': 0,
-                    'barcode': 'BRAK_ID',
-                    'error': f'Product ID = 0 - prawdopodobnie usunięty produkt',
+                    'wc_product_id': wc_key,
+                    'barcode': 'BRAK_ID_LUB_QTY',
+                    'error': 'Brak ID lub ilość <= 0',
                     'skipped': True
                 }
                 results.append(result)
                 continue
-            
-            # Pobierz kod kreskowy używając mapowania
-            barcode = self.get_barcode_for_product(product_id, item.get('meta_data', []))
-            
-            # Jeśli brak mapowania - POMIŃ PRODUKT
+
+            # Mapowanie WC -> Odoo barcode
+            barcode = self.get_barcode_for_wc_key(wc_key, item.get('meta_data', []))
             if barcode is None:
-                result = {
+                results.append({
                     'success': False,
                     'product_name': product_name,
-                    'wc_product_id': wc_variant_id,
+                    'wc_product_id': wc_key,
                     'barcode': 'BRAK_MAPOWANIA',
-                    'error': f'Brak mapowania dla WC ID {product_id} - POMIJAM',
+                    'error': f'Brak mapowania dla WC ID {wc_key}',
                     'skipped': True
-                }
-                results.append(result)
+                })
                 continue
-            
+
             # Znajdź produkt w Odoo
             odoo_product = self.find_product_in_odoo(barcode)
-            
-            if odoo_product:
-                try:
-                    picking_id = self.create_stock_move_out(
-                        odoo_product['id'], 
-                        quantity, 
-                        order_number
-                    )
-                    
-                    result = {
-                        'success': True,
-                        'product_name': odoo_product['name'],
-                        'wc_product_id': product_id,
-                        'barcode': barcode,
-                        'quantity': quantity,
-                        'picking_id': picking_id
-                    }
-                    
-                    print(f"    ✅ Utworzono dokument wydania #{picking_id}")
-                    
-                except Exception as e:
-                    result = {
-                        'success': False,
-                        'product_name': product_name,
-                        'wc_product_id': product_id,
-                        'barcode': barcode,
-                        'error': str(e)
-                    }
-                    print(f"    ❌ Błąd: {e}")
-            else:
-                result = {
+            if not odoo_product:
+                results.append({
                     'success': False,
                     'product_name': product_name,
-                    'wc_product_id': product_id,
+                    'wc_product_id': wc_key,
                     'barcode': barcode,
                     'error': 'Produkt nie znaleziony w Odoo'
-                }
-                print(f"    ⚠️ Produkt nie znaleziony w Odoo (kod: {barcode})")
-            
-            results.append(result)
-        
+                })
+                print(f"    ⚠️ Produkt nie znaleziony w Odoo (barcode: {barcode})")
+                continue
+
+            # Utwórz wydanie
+            try:
+                picking_id = self.create_stock_move_out(odoo_product['id'], quantity, order_number)
+                results.append({
+                    'success': True,
+                    'product_name': odoo_product['name'],
+                    'wc_product_id': wc_key,
+                    'barcode': barcode,
+                    'quantity': quantity,
+                    'picking_id': picking_id
+                })
+                print(f"    ✅ Utworzono dokument wydania #{picking_id}")
+            except Exception as e:
+                results.append({
+                    'success': False,
+                    'product_name': product_name,
+                    'wc_product_id': wc_key,
+                    'barcode': barcode,
+                    'error': str(e)
+                })
+                print(f"    ❌ Błąd: {e}")
+
         return results
-    
+
     def add_order_note(self, order_id, note):
-        """Dodaj notatkę do zamówienia WooCommerce"""
+        """Dodaj notatkę do zamówienia WooCommerce."""
         try:
             url = f"{self.wc_url}/wp-json/wc/v3/orders/{order_id}/notes"
-            
-            auth = base64.b64encode(
-                f"{self.wc_consumer_key}:{self.wc_consumer_secret}".encode()
-            ).decode()
-            
-            headers = {
-                'Authorization': f'Basic {auth}',
-                'Content-Type': 'application/json'
-            }
-            
-            data = {
-                'note': note,
-                'customer_note': False
-            }
-            
+            auth = base64.b64encode(f"{self.wc_consumer_key}:{self.wc_consumer_secret}".encode()).decode()
+            headers = {'Authorization': f'Basic {auth}', 'Content-Type': 'application/json'}
+            data = {'note': note, 'customer_note': False}
             response = requests.post(url, headers=headers, json=data, timeout=15)
             response.raise_for_status()
-            
         except Exception as e:
             print(f"⚠️ Nie udało się dodać notatki do zamówienia: {e}")
-    
+
+    # -------------------- RUN --------------------
     def run(self):
-        """Główna funkcja synchronizacji"""
+        """Główna pętla synchronizacji."""
         try:
-            # UWAGA: Usuń plik statusu żeby zacząć od nowa
+            # (Opcjonalnie) Reset statusu – zaczynamy od bieżącego zestawu zamówień
             if os.path.exists(self.status_file):
                 os.remove(self.status_file)
-                print("🔄 Resetowanie statusu - zaczynam od najnowszych zamówień")
-            
-            # Wczytaj ostatni status
-            status = self.load_last_sync_status()
-            last_order_id = 0  # Zacznij od początku
-            processed_orders = []  # Pusta lista
-            
-            print(f"📊 Sprawdzam najnowsze zamówienia processing")
-            
-            # Połącz z Odoo
+                print("🔄 Reset statusu – start od najnowszych zamówień")
+
+            print("📊 Sprawdzam zamówienia w statusie 'processing'")
+
             if not self.connect_odoo():
                 return False
-            
-            # Pobierz nowe zamówienia
-            orders = self.get_woocommerce_orders(last_order_id)
-            
+
+            orders = self.get_woocommerce_orders()
             if not orders:
-                print("✅ Brak nowych zamówień do przetworzenia")
+                print("✅ Brak zamówień do przetworzenia")
                 return True
-            
-            # Przetwórz każde zamówienie
-            new_last_order_id = last_order_id
+
             total_processed = 0
-            
+            processed_orders = []
+
             for order in orders:
                 order_id = order['id']
-                order_status = order['status']
-                
-                print(f"\n📦 Sprawdzam zamówienie #{order['number']} (ID: {order_id}, Status: {order_status})")
-                
-                # SPRAWDŹ STATUS - tylko processing
+                order_status = order.get('status')
+
+                print(f"\n📦 Sprawdzam zamówienie #{order.get('number')} (ID: {order_id}, Status: {order_status})")
+
                 if order_status != 'processing':
-                    print(f"⏭️ Pomijam - status '{order_status}' (oczekuję 'processing')")
+                    print(f"⏭️ Pomijam – status '{order_status}' (oczekuję 'processing')")
                     continue
-                
-                # Pomiń już przetworzone zamówienia
+
                 if order_id in processed_orders:
-                    print(f"⏭️ Zamówienie #{order['number']} już przetworzone")
+                    print(f"⏭️ Zamówienie #{order.get('number')} już przetworzone")
                     continue
-                
-                # Przetwórz zamówienie
+
+                # Przetwórz pozycje
                 results = self.process_order(order)
-                
-                # Przygotuj notatkę
-                note_lines = [f"🤖 GitHub Actions - Odoo Sync {datetime.now().strftime('%Y-%m-%d %H:%M')}"]
-                
-                for result in results:
-                    if result.get('skipped'):
-                        note_lines.append(f"⏭️ {result['product_name']}: POMINIĘTO - {result['error']}")
-                    elif result['success']:
-                        note_lines.append(f"✅ {result['product_name']}: -{result['quantity']} szt. (WC:{result['wc_product_id']} → {result['barcode']}, Dok: #{result['picking_id']})")
+
+                # Notatka do zamówienia
+                note_lines = [f"🤖 Odoo Sync {datetime.now().strftime('%Y-%m-%d %H:%M')}"]
+                for r in results:
+                    if r.get('skipped'):
+                        note_lines.append(f"⏭️ {r['product_name']}: POMINIĘTO – {r['error']}")
+                    elif r['success']:
+                        note_lines.append(
+                            f"✅ {r['product_name']}: -{r['quantity']} szt. "
+                            f"(WC:{r['wc_product_id']} → {r['barcode']}, Dok: #{r['picking_id']})"
+                        )
                     else:
-                        note_lines.append(f"❌ {result['product_name']}: {result['error']} (WC:{result['wc_product_id']} → {result['barcode']})")
-                
+                        note_lines.append(
+                            f"❌ {r['product_name']}: {r['error']} "
+                            f"(WC:{r['wc_product_id']} → {r['barcode']})"
+                        )
                 note = "\n".join(note_lines)
-                
-                # Dodaj notatkę do zamówienia
                 self.add_order_note(order_id, note)
-                
-                # Aktualizuj status
+
                 processed_orders.append(order_id)
-                new_last_order_id = max(new_last_order_id, order_id)
                 total_processed += 1
-                
-                print(f"✅ Zamówienie #{order['number']} przetworzone")
-            
-            # Zapisz nowy status
+                print(f"✅ Zamówienie #{order.get('number')} przetworzone")
+
+            # Zapisz prosty status (ostatnie 100)
             new_status = {
-                'last_order_id': new_last_order_id,
-                'processed_orders': processed_orders[-100:],  # Zachowaj ostatnie 100
+                'last_order_id': max(processed_orders) if processed_orders else 0,
+                'processed_orders': processed_orders[-100:],
                 'last_sync': datetime.now().isoformat()
             }
-            
-            self.save_sync_status(new_status)
-            
-            print(f"\n🎉 Synchronizacja zakończona!")
+            try:
+                with open(self.status_file, 'w', encoding='utf-8') as f:
+                    json.dump(new_status, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                print(f"⚠️ Błąd zapisu statusu: {e}")
+
+            print("\n🎉 Synchronizacja zakończona")
             print(f"📈 Przetworzone zamówienia: {total_processed}")
-            print(f"📊 Nowe ostatnie ID: {new_last_order_id}")
-            
+            print(f"📊 Nowe ostatnie ID: {new_status['last_order_id']}")
             return True
-            
+
         except Exception as e:
             print(f"💥 Błąd synchronizacji: {e}")
             return False
+
 
 if __name__ == "__main__":
     sync = WooCommerceOdooSync()
