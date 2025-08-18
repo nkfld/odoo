@@ -276,8 +276,27 @@ class WooCommerceOdooSync:
             return None
     
     def create_stock_move_out(self, product_id, quantity, order_number):
-        """Utwórz wydanie magazynowe w Odoo - na podstawie działającego skanera"""
+        """Utwórz wydanie magazynowe w Odoo - ulepszona wersja dla Odoo 17"""
         try:
+            # Sprawdź dostępność produktu
+            product_info = self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'product.product', 'read',
+                [product_id],
+                {'fields': ['name', 'qty_available']}
+            )
+            
+            if not product_info:
+                raise Exception('Nie znaleziono produktu')
+            
+            product_name = product_info[0]['name']
+            qty_available = product_info[0]['qty_available']
+            
+            print(f"    📦 Produkt: {product_name}, dostępne: {qty_available}, żądane: {quantity}")
+            
+            if qty_available < quantity:
+                print(f"    ⚠️ UWAGA: Niewystarczający stan! Dostępne: {qty_available}, potrzebne: {quantity}")
+            
             # Pobierz lokalizację klienta
             customer_locations = self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
@@ -296,20 +315,7 @@ class WooCommerceOdooSync:
             )
             picking_type = picking_types[0] if picking_types else 1
             
-            # Pobierz dane produktu
-            product_info = self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'product.product', 'read',
-                [product_id],
-                {'fields': ['name']}
-            )
-            
-            if not product_info:
-                raise Exception('Nie znaleziono produktu')
-            
-            product_name = product_info[0]['name']
-            
-            # Utwórz dokument magazynowy (picking) - jak w skanerze
+            # Utwórz dokument magazynowy (picking)
             picking_vals = {
                 'picking_type_id': picking_type,
                 'location_id': self.odoo_location_id,
@@ -324,12 +330,14 @@ class WooCommerceOdooSync:
                 [picking_vals]
             )
             
-            # Utwórz linię ruchu - jak w skanerze
+            print(f"    ✅ Utworzono picking #{picking_id}")
+            
+            # Utwórz linię ruchu
             move_vals = {
                 'name': f'WooCommerce wydanie: {product_name}',
                 'product_id': product_id,
                 'product_uom_qty': quantity,
-                'product_uom': 1,  # Domyślna jednostka miary jak w skanerze
+                'product_uom': 1,  # Domyślna jednostka miary
                 'picking_id': picking_id,
                 'location_id': self.odoo_location_id,
                 'location_dest_id': customer_location,
@@ -342,41 +350,115 @@ class WooCommerceOdooSync:
                 [move_vals]
             )
             
-            # Potwierdź picking - jak w skanerze
+            print(f"    ✅ Utworzono move #{move_id}")
+            
+            # KROK 1: Potwierdź picking
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.picking', 'action_confirm',
                 [picking_id]
             )
             
-            # KLUCZOWY KROK: Ustaw quantity_done - jak w skanerze
-            self.odoo_models.execute_kw(
+            print(f"    ✅ Picking #{picking_id} potwierdzony")
+            
+            # KROK 2: Przypisz dostępność (jeśli możliwe)
+            try:
+                self.odoo_models.execute_kw(
+                    self.odoo_db, self.odoo_uid, self.odoo_password,
+                    'stock.picking', 'action_assign',
+                    [picking_id]
+                )
+                print(f"    ✅ Picking #{picking_id} przypisany")
+            except Exception as e:
+                print(f"    ⚠️ Nie udało się przypisać (brak stanu?): {e}")
+            
+            # KROK 3: Ustaw quantity_done na move_line (nie na move!)
+            # Pobierz move_lines dla tego picking
+            move_lines = self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.move', 'write',
-                [move_id, {'quantity_done': quantity}]
+                'stock.move.line', 'search_read',
+                [[['picking_id', '=', picking_id]]],
+                {'fields': ['id', 'product_id', 'qty_done']}
             )
             
-            # Waliduj picking - jak w skanerze
+            if move_lines:
+                # Ustaw quantity_done na move_line
+                for line in move_lines:
+                    if line['product_id'][0] == product_id:
+                        self.odoo_models.execute_kw(
+                            self.odoo_db, self.odoo_uid, self.odoo_password,
+                            'stock.move.line', 'write',
+                            [line['id'], {'qty_done': quantity}]
+                        )
+                        print(f"    ✅ Ustawiono qty_done={quantity} na move_line #{line['id']}")
+            else:
+                # Jeśli nie ma move_lines, utwórz je ręcznie
+                move_line_vals = {
+                    'picking_id': picking_id,
+                    'move_id': move_id,
+                    'product_id': product_id,
+                    'location_id': self.odoo_location_id,
+                    'location_dest_id': customer_location,
+                    'qty_done': quantity,
+                    'product_uom_id': 1
+                }
+                
+                move_line_id = self.odoo_models.execute_kw(
+                    self.odoo_db, self.odoo_uid, self.odoo_password,
+                    'stock.move.line', 'create',
+                    [move_line_vals]
+                )
+                print(f"    ✅ Utworzono move_line #{move_line_id} z qty_done={quantity}")
+            
+            # KROK 4: Spróbuj walidacji picking
             try:
+                # Metoda 1: button_validate
                 self.odoo_models.execute_kw(
                     self.odoo_db, self.odoo_uid, self.odoo_password,
                     'stock.picking', 'button_validate',
                     [picking_id]
                 )
-                print(f"    ✅ Dokument wydania #{picking_id} zwalidowany")
+                print(f"    ✅ Picking #{picking_id} zwalidowany przez button_validate")
+                
             except Exception as e:
-                print(f"    ⚠️ Błąd walidacji - próba alternatywnej metody: {e}")
-                # Fallback - ustaw stany ręcznie
-                self.odoo_models.execute_kw(
-                    self.odoo_db, self.odoo_uid, self.odoo_password,
-                    'stock.picking', 'write',
-                    [picking_id, {'state': 'done'}]
-                )
-                self.odoo_models.execute_kw(
-                    self.odoo_db, self.odoo_uid, self.odoo_password,
-                    'stock.move', 'write',
-                    [move_id, {'state': 'done'}]
-                )
+                print(f"    ⚠️ button_validate nie powiódł się: {str(e)[:200]}...")
+                
+                try:
+                    # Metoda 2: action_done
+                    self.odoo_models.execute_kw(
+                        self.odoo_db, self.odoo_uid, self.odoo_password,
+                        'stock.picking', 'action_done',
+                        [picking_id]
+                    )
+                    print(f"    ✅ Picking #{picking_id} zwalidowany przez action_done")
+                    
+                except Exception as e2:
+                    print(f"    ⚠️ action_done nie powiódł się: {str(e2)[:200]}...")
+                    
+                    # Metoda 3: Ręczne ustawienie stanu
+                    self.odoo_models.execute_kw(
+                        self.odoo_db, self.odoo_uid, self.odoo_password,
+                        'stock.picking', 'write',
+                        [picking_id, {'state': 'done'}]
+                    )
+                    
+                    self.odoo_models.execute_kw(
+                        self.odoo_db, self.odoo_uid, self.odoo_password,
+                        'stock.move', 'write',
+                        [move_id, {'state': 'done'}]
+                    )
+                    
+                    print(f"    ⚠️ Picking #{picking_id} ustawiony ręcznie na 'done'")
+            
+            # Sprawdź końcowy stan
+            final_state = self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.picking', 'read',
+                [picking_id],
+                {'fields': ['state']}
+            )
+            
+            print(f"    📊 Końcowy stan picking: {final_state[0]['state']}")
             
             return picking_id
             
