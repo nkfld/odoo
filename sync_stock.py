@@ -277,22 +277,28 @@ class WooCommerceOdooSync:
     
     def create_stock_move_out(self, product_id, quantity, order_number):
         """
-        Tworzy ruch magazynowy (wydanie towaru) - DOKŁADNIE jak w działającym skanerze
+        DOSŁOWNA kopia funkcji create_stock_move ze skanera - tylko wydanie
         """
         try:
-            # Zdejmowanie towaru - z magazynu do lokalizacji klienta
+            print(f"    🔄 Tworzenie wydania dla produktu {product_id}, ilość: {quantity}")
+            
+            # DOKŁADNIE jak w skanerze - zdejmowanie towaru
             source_location = self.odoo_location_id
             dest_location = self.get_customer_location()
             picking_type = self.get_picking_type('outgoing')
             
-            # Tworzymy picking (dokument magazynowy) - DOKŁADNIE jak w skanerze
+            print(f"    📍 Source: {source_location}, Dest: {dest_location}, Type: {picking_type}")
+            
+            # Tworzymy picking (dokument magazynowy) - IDENTYCZNE wartości jak w skanerze
             picking_vals = {
                 'picking_type_id': picking_type,
                 'location_id': source_location,
                 'location_dest_id': dest_location,
-                'origin': f'WooCommerce #{order_number} - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+                'origin': f'Skaner - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
                 'state': 'draft',
             }
+            
+            print(f"    📄 Tworzenie picking z vals: {picking_vals}")
             
             picking_id = self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
@@ -300,9 +306,11 @@ class WooCommerceOdooSync:
                 [picking_vals]
             )
             
-            # Tworzymy linię ruchu - DOKŁADNIE jak w skanerze
+            print(f"    ✅ Utworzono picking ID: {picking_id}")
+            
+            # Tworzymy linię ruchu - IDENTYCZNE wartości jak w skanerze
             move_vals = {
-                'name': f'WooCommerce: out',
+                'name': f'Skan: out',
                 'product_id': product_id,
                 'product_uom_qty': quantity,
                 'product_uom': 1,  # Domyślna jednostka miary
@@ -312,38 +320,53 @@ class WooCommerceOdooSync:
                 'state': 'draft',
             }
             
+            print(f"    📦 Tworzenie move z vals: {move_vals}")
+            
             move_id = self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.move', 'create',
                 [move_vals]
             )
             
-            # Potwierdzamy picking - DOKŁADNIE jak w skanerze
+            print(f"    ✅ Utworzono move ID: {move_id}")
+            
+            # Potwierdzamy picking - IDENTYCZNIE jak w skanerze
+            print(f"    🔄 Potwierdzanie picking...")
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.picking', 'action_confirm',
                 [picking_id]
             )
             
-            # Ustawiamy ilość do przeniesienia - DOKŁADNIE jak w skanerze
+            print(f"    ✅ Picking potwierdzony")
+            
+            # Ustawiamy ilość do przeniesienia - IDENTYCZNIE jak w skanerze  
+            print(f"    🔄 Ustawianie quantity_done = {quantity}")
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.move', 'write',
                 [move_id, {'quantity_done': quantity}]
             )
             
-            # Walidujemy picking - DOKŁADNIE jak w skanerze
+            print(f"    ✅ Ustawiono quantity_done")
+            
+            # Walidujemy picking - IDENTYCZNIE jak w skanerze
+            print(f"    🔄 Walidacja picking...")
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.picking', 'button_validate',
                 [picking_id]
             )
             
-            print(f"    ✅ Dokument wydania #{picking_id} utworzony i zwalidowany")
+            print(f"    ✅ Picking zwalidowany! ID: {picking_id}")
             return picking_id
             
         except Exception as e:
-            print(f"❌ Błąd tworzenia dokumentu magazynowego: {e}")
+            print(f"    ❌ BŁĄD w create_stock_move_out:")
+            print(f"    ❌ Typ błędu: {type(e)}")
+            print(f"    ❌ Komunikat: {str(e)}")
+            if hasattr(e, 'faultString'):
+                print(f"    ❌ XML-RPC Fault: {e.faultString}")
             raise e
     
     def get_customer_location(self):
