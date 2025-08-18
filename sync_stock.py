@@ -21,9 +21,19 @@ class WooCommerceOdooSync:
         # Odoo config
         self.odoo_url = os.getenv('ODOO_URL')
         self.odoo_db = os.getenv('ODOO_DB')
-        self.odoo_user = os.getenv('ODOO_USER')
+        self.odoo_username = os.getenv('ODOO_USERNAME')
         self.odoo_password = os.getenv('ODOO_PASSWORD')
-        self.odoo_location_id = int(os.getenv('ODOO_LOCATION_ID', '8'))
+        
+        # Bezpieczne parsowanie ODOO_LOCATION_ID
+        location_id_str = os.getenv('ODOO_LOCATION_ID', '8').strip()
+        if not location_id_str or location_id_str == '':
+            self.odoo_location_id = 8  # Domyślna wartość
+        else:
+            try:
+                self.odoo_location_id = int(location_id_str)
+            except ValueError:
+                print(f"⚠️ Nieprawidłowa wartość ODOO_LOCATION_ID: '{location_id_str}' - używam domyślnej wartości 8")
+                self.odoo_location_id = 8
         
         # Wczytaj mapowanie produktów
         self.product_mapping = self.load_product_mapping()
@@ -167,7 +177,7 @@ class WooCommerceOdooSync:
             
             # Parametry - tylko zamówienia "processing" lub "completed"
             params = {
-                'status': 'processing',
+                'status': 'processing,completed',
                 'per_page': 50,
                 'orderby': 'id',
                 'order': 'asc'
