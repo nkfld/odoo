@@ -2,8 +2,8 @@ name: WooCommerce to Odoo Stock Sync
 
 on:
   schedule:
-    # Uruchamiaj co 5 minut
-    - cron: '*/5 * * * *'
+    # Uruchamiaj co godzinę
+    - cron: '0 * * * *'
   workflow_dispatch: # Możliwość ręcznego uruchomienia
 
 jobs:
