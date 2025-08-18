@@ -277,28 +277,25 @@ class WooCommerceOdooSync:
     
     def create_stock_move_out(self, product_id, quantity, order_number):
         """
-        DOSŁOWNA kopia funkcji create_stock_move ze skanera - tylko wydanie
+        Wydanie towaru - poprawione dla Odoo 17 (quantity_done jest na stock.move.line!)
         """
         try:
             print(f"    🔄 Tworzenie wydania dla produktu {product_id}, ilość: {quantity}")
             
-            # DOKŁADNIE jak w skanerze - zdejmowanie towaru
             source_location = self.odoo_location_id
             dest_location = self.get_customer_location()
             picking_type = self.get_picking_type('outgoing')
             
             print(f"    📍 Source: {source_location}, Dest: {dest_location}, Type: {picking_type}")
             
-            # Tworzymy picking (dokument magazynowy) - IDENTYCZNE wartości jak w skanerze
+            # Tworzymy picking (dokument magazynowy)
             picking_vals = {
                 'picking_type_id': picking_type,
                 'location_id': source_location,
                 'location_dest_id': dest_location,
-                'origin': f'Skaner - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+                'origin': f'WooCommerce #{order_number} - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
                 'state': 'draft',
             }
-            
-            print(f"    📄 Tworzenie picking z vals: {picking_vals}")
             
             picking_id = self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
@@ -308,19 +305,17 @@ class WooCommerceOdooSync:
             
             print(f"    ✅ Utworzono picking ID: {picking_id}")
             
-            # Tworzymy linię ruchu - IDENTYCZNE wartości jak w skanerze
+            # Tworzymy linię ruchu
             move_vals = {
-                'name': f'Skan: out',
+                'name': f'WooCommerce wydanie',
                 'product_id': product_id,
                 'product_uom_qty': quantity,
-                'product_uom': 1,  # Domyślna jednostka miary
+                'product_uom': 1,
                 'picking_id': picking_id,
                 'location_id': source_location,
                 'location_dest_id': dest_location,
                 'state': 'draft',
             }
-            
-            print(f"    📦 Tworzenie move z vals: {move_vals}")
             
             move_id = self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
@@ -330,8 +325,7 @@ class WooCommerceOdooSync:
             
             print(f"    ✅ Utworzono move ID: {move_id}")
             
-            # Potwierdzamy picking - IDENTYCZNIE jak w skanerze
-            print(f"    🔄 Potwierdzanie picking...")
+            # Potwierdzamy picking
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.picking', 'action_confirm',
@@ -340,17 +334,45 @@ class WooCommerceOdooSync:
             
             print(f"    ✅ Picking potwierdzony")
             
-            # Ustawiamy ilość do przeniesienia - IDENTYCZNIE jak w skanerze  
-            print(f"    🔄 Ustawianie quantity_done = {quantity}")
-            self.odoo_models.execute_kw(
+            # KRYTYCZNE: W Odoo 17 quantity_done ustawiamy na stock.move.line, NIE na stock.move!
+            # Pobierz move_lines utworzone automatycznie po action_confirm
+            move_lines = self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.move', 'write',
-                [move_id, {'quantity_done': quantity}]
+                'stock.move.line', 'search_read',
+                [[['move_id', '=', move_id]]],
+                {'fields': ['id', 'product_id']}
             )
             
-            print(f"    ✅ Ustawiono quantity_done")
+            if move_lines:
+                # Ustaw qty_done na move_line (w Odoo 17 to pole jest tu!)
+                for line in move_lines:
+                    self.odoo_models.execute_kw(
+                        self.odoo_db, self.odoo_uid, self.odoo_password,
+                        'stock.move.line', 'write',
+                        [line['id'], {'qty_done': quantity}]
+                    )
+                    print(f"    ✅ Ustawiono qty_done={quantity} na move_line #{line['id']}")
+            else:
+                # Jeśli nie ma move_lines, utwórz je ręcznie
+                print(f"    🔄 Brak move_lines - tworzę ręcznie")
+                move_line_vals = {
+                    'move_id': move_id,
+                    'picking_id': picking_id,
+                    'product_id': product_id,
+                    'location_id': source_location,
+                    'location_dest_id': dest_location,
+                    'qty_done': quantity,
+                    'product_uom_id': 1
+                }
+                
+                move_line_id = self.odoo_models.execute_kw(
+                    self.odoo_db, self.odoo_uid, self.odoo_password,
+                    'stock.move.line', 'create',
+                    [move_line_vals]
+                )
+                print(f"    ✅ Utworzono move_line #{move_line_id} z qty_done={quantity}")
             
-            # Walidujemy picking - IDENTYCZNIE jak w skanerze
+            # Walidujemy picking
             print(f"    🔄 Walidacja picking...")
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
