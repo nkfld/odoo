@@ -169,9 +169,9 @@ class WooCommerceOdooSync:
             # Uwierzytelnienie
             print("🔐 Próba uwierzytelnienia...")
             auth_result = common.authenticate(
-                self.odoo_db, 
-                self.odoo_username, 
-                self.odoo_password, 
+                self.odoo_db,
+                self.odoo_username,
+                self.odoo_password,
                 {}
             )
             
@@ -218,7 +218,7 @@ class WooCommerceOdooSync:
                 'Content-Type': 'application/json'
             }
             
-            # Parametry - tylko zamówienia "processing" 
+            # Parametry - tylko zamówienia "processing"
             params = {
                 'status': 'processing',
                 'per_page': 50,
@@ -274,23 +274,9 @@ class WooCommerceOdooSync:
         except Exception as e:
             print(f"❌ Błąd wyszukiwania produktu {barcode}: {e}")
             return None
-        """Znajdź produkt w Odoo po kodzie kreskowym"""
-        try:
-            products = self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'product.product', 'search_read',
-                [[['barcode', '=', str(barcode)]]],
-                {'fields': ['id', 'name', 'barcode']}
-            )
-            
-            return products[0] if products else None
-            
-        except Exception as e:
-            print(f"❌ Błąd wyszukiwania produktu {barcode}: {e}")
-            return None
     
     def create_stock_move_out(self, product_id, quantity, order_number):
-        """Utwórz wydanie magazynowe w Odoo"""
+        """Utwórz wydanie magazynowe w Odoo - na podstawie działającego skanera"""
         try:
             # Pobierz lokalizację klienta
             customer_locations = self.odoo_models.execute_kw(
@@ -315,16 +301,15 @@ class WooCommerceOdooSync:
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'product.product', 'read',
                 [product_id],
-                {'fields': ['uom_id', 'name']}
+                {'fields': ['name']}
             )
             
             if not product_info:
                 raise Exception('Nie znaleziono produktu')
             
-            product_uom = product_info[0]['uom_id'][0] if product_info[0]['uom_id'] else 1
             product_name = product_info[0]['name']
             
-            # Utwórz dokument magazynowy
+            # Utwórz dokument magazynowy (picking) - jak w skanerze
             picking_vals = {
                 'picking_type_id': picking_type,
                 'location_id': self.odoo_location_id,
@@ -339,12 +324,12 @@ class WooCommerceOdooSync:
                 [picking_vals]
             )
             
-            # Utwórz linię ruchu
+            # Utwórz linię ruchu - jak w skanerze
             move_vals = {
                 'name': f'WooCommerce wydanie: {product_name}',
                 'product_id': product_id,
                 'product_uom_qty': quantity,
-                'product_uom': product_uom,
+                'product_uom': 1,  # Domyślna jednostka miary jak w skanerze
                 'picking_id': picking_id,
                 'location_id': self.odoo_location_id,
                 'location_dest_id': customer_location,
@@ -357,36 +342,40 @@ class WooCommerceOdooSync:
                 [move_vals]
             )
             
-            # Potwierdź i zrealizuj
+            # Potwierdź picking - jak w skanerze
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.picking', 'action_confirm',
-                [[picking_id]]
+                [picking_id]
             )
             
+            # KLUCZOWY KROK: Ustaw quantity_done - jak w skanerze
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.move', 'write',
-                [[move_id], {'state': 'assigned'}]
+                [move_id, {'quantity_done': quantity}]
             )
             
+            # Waliduj picking - jak w skanerze
             try:
                 self.odoo_models.execute_kw(
                     self.odoo_db, self.odoo_uid, self.odoo_password,
-                    'stock.move', '_action_done',
-                    [[move_id]]
+                    'stock.picking', 'button_validate',
+                    [picking_id]
                 )
-            except:
-                # Fallback
+                print(f"    ✅ Dokument wydania #{picking_id} zwalidowany")
+            except Exception as e:
+                print(f"    ⚠️ Błąd walidacji - próba alternatywnej metody: {e}")
+                # Fallback - ustaw stany ręcznie
                 self.odoo_models.execute_kw(
                     self.odoo_db, self.odoo_uid, self.odoo_password,
                     'stock.picking', 'write',
-                    [[picking_id], {'state': 'done'}]
+                    [picking_id, {'state': 'done'}]
                 )
                 self.odoo_models.execute_kw(
                     self.odoo_db, self.odoo_uid, self.odoo_password,
                     'stock.move', 'write',
-                    [[move_id], {'state': 'done'}]
+                    [move_id, {'state': 'done'}]
                 )
             
             return picking_id
@@ -566,7 +555,7 @@ class WooCommerceOdooSync:
                 
                 for result in results:
                     if result.get('skipped'):
-                        note_lines.append(f"⏭️ {result['product_name']}: POMINIĘTO - brak mapowania (WC ID: {result['wc_product_id']})")
+                        note_lines.append(f"⏭️ {result['product_name']}: POMINIĘTO - {result['error']}")
                     elif result['success']:
                         note_lines.append(f"✅ {result['product_name']}: -{result['quantity']} szt. (WC:{result['wc_product_id']} → {result['barcode']}, Dok: #{result['picking_id']})")
                     else:
