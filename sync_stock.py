@@ -1,19 +1,22 @@
 def create_stock_move_out(self, product_id, quantity, order_number):
         """
-        OSTATNIA PRÓBA - sprawdzamy czy to 'quantity' zamiast 'quantity_done'
+        Najprostsze rozwiązanie - bez quantity_done, tylko podstawowe operacje
         """
         try:
-            # Zdejmowanie towaru - z magazynu do lokalizacji klienta
+            print(f"    🔄 Tworzenie wydania dla produktu {product_id}, ilość: {quantity}")
+            
             source_location = self.odoo_location_id
             dest_location = self.get_customer_location()
             picking_type = self.get_picking_type('outgoing')
+            
+            print(f"    📍 Source: {source_location}, Dest: {dest_location}, Type: {picking_type}")
             
             # Tworzymy picking (dokument magazynowy)
             picking_vals = {
                 'picking_type_id': picking_type,
                 'location_id': source_location,
                 'location_dest_id': dest_location,
-                'origin': f'Skaner - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+                'origin': f'WooCommerce #{order_number} - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
                 'state': 'draft',
             }
             
@@ -23,12 +26,14 @@ def create_stock_move_out(self, product_id, quantity, order_number):
                 [picking_vals]
             )
             
+            print(f"    ✅ Utworzono picking ID: {picking_id}")
+            
             # Tworzymy linię ruchu
             move_vals = {
-                'name': f'Skan: out',
+                'name': f'WooCommerce wydanie',
                 'product_id': product_id,
                 'product_uom_qty': quantity,
-                'product_uom': 1,  # Domyślna jednostka miary
+                'product_uom': 1,
                 'picking_id': picking_id,
                 'location_id': source_location,
                 'location_dest_id': dest_location,
@@ -41,6 +46,8 @@ def create_stock_move_out(self, product_id, quantity, order_number):
                 [move_vals]
             )
             
+            print(f"    ✅ Utworzono move ID: {move_id}")
+            
             # Potwierdzamy picking
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
@@ -48,43 +55,38 @@ def create_stock_move_out(self, product_id, quantity, order_number):
                 [picking_id]
             )
             
-            # PRÓBA 1: quantity_done (jak w skanerze)
+            print(f"    ✅ Picking potwierdzony")
+            
+            # POMIJAMY quantity_done - od razu walidujemy
+            print(f"    🔄 Próba walidacji bez ustawiania quantity_done...")
+            
             try:
                 self.odoo_models.execute_kw(
                     self.odoo_db, self.odoo_uid, self.odoo_password,
-                    'stock.move', 'write',
-                    [move_id, {'quantity_done': quantity}]
+                    'stock.picking', 'button_validate',
+                    [picking_id]
                 )
-                print(f"    ✅ quantity_done zadziałało!")
-            except Exception as e1:
-                print(f"    ❌ quantity_done nie działa: {e1}")
+                print(f"    ✅ Picking #{picking_id} zwalidowany bez quantity_done!")
+                return picking_id
                 
-                # PRÓBA 2: quantity
-                try:
-                    self.odoo_models.execute_kw(
-                        self.odoo_db, self.odoo_uid, self.odoo_password,
-                        'stock.move', 'write',
-                        [move_id, {'quantity': quantity}]
-                    )
-                    print(f"    ✅ quantity zadziałało!")
-                except Exception as e2:
-                    print(f"    ❌ quantity też nie działa: {e2}")
-                    
-                    # PRÓBA 3: Pomiń ten krok - od razu waliduj
-                    print(f"    ⚠️ Pomijam ustawienie quantity - próbuję bezpośredniej walidacji")
-            
-            # Walidujemy picking
-            self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.picking', 'button_validate',
-                [picking_id]
-            )
-            
-            print(f"    ✅ Picking #{picking_id} zwalidowany")
-            return picking_id
+            except Exception as validate_error:
+                print(f"    ❌ Walidacja nie powiodła się: {validate_error}")
+                
+                # Sprawdź status picking
+                picking_state = self.odoo_models.execute_kw(
+                    self.odoo_db, self.odoo_uid, self.odoo_password,
+                    'stock.picking', 'read',
+                    [picking_id],
+                    {'fields': ['state']}
+                )
+                print(f"    📊 Status picking: {picking_state[0]['state']}")
+                
+                # Jeśli walidacja nie działa, przynajmniej mamy dokument
+                print(f"    ⚠️ Dokument utworzony ale nie zwalidowany - sprawdź ręcznie w Odoo")
+                return picking_id
             
         except Exception as e:
-            print(f"❌ Błąd tworzenia ruchu magazynowego: {e}")
+            print(f"    ❌ BŁĄD: {str(e)[:200]}...")
             return False#!/usr/bin/env python3
 """
 Synchronizacja zamówień WooCommerce z Odoo
