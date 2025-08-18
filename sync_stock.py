@@ -505,11 +505,11 @@ class WooCommerceOdooSync:
         
         for item in order['line_items']:
             # Używaj tylko product_id
-            product_id = item.get('product_id', 0)
+            wc_variant_id = item.get('variation_id') or item.get('product_id', 0)
             quantity = item['quantity']
             product_name = item['name']
             
-            print(f"  🛍️ Produkt: {product_name} (WC ID: {product_id}, ilość: {quantity})")
+            print(f"  🛍️ Produkt: {product_name} (WC ID: {wc_variant_id}, product_id={item.get('product_id')} ilość: {quantity})")
             
             # Jeśli ID = 0, pomiń produkt
             if product_id == 0:
@@ -532,7 +532,7 @@ class WooCommerceOdooSync:
                 result = {
                     'success': False,
                     'product_name': product_name,
-                    'wc_product_id': product_id,
+                    'wc_product_id': wc_variant_id,
                     'barcode': 'BRAK_MAPOWANIA',
                     'error': f'Brak mapowania dla WC ID {product_id} - POMIJAM',
                     'skipped': True
