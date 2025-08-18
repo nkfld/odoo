@@ -50,7 +50,7 @@ class WooCommerceOdooSync:
     def load_product_mapping(self):
         """Wczytaj mapowanie z pliku product-mapping.json (WC ID -> Odoo barcode)."""
         try:
-            path = 'product-mapping.json'
+            path = 'product_mapping.json'
             if os.path.exists(path):
                 with open(path, 'r', encoding='utf-8') as f:
                     mapping = json.load(f)
