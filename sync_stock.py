@@ -1,6 +1,6 @@
 def create_stock_move_out(self, product_id, quantity, order_number):
         """
-        DOSŁOWNA KOPIA funkcji create_stock_move ze skanera - move_type='out'
+        OSTATNIA PRÓBA - sprawdzamy czy to 'quantity' zamiast 'quantity_done'
         """
         try:
             # Zdejmowanie towaru - z magazynu do lokalizacji klienta
@@ -8,7 +8,7 @@ def create_stock_move_out(self, product_id, quantity, order_number):
             dest_location = self.get_customer_location()
             picking_type = self.get_picking_type('outgoing')
             
-            # Tworzymy picking (dokument magazynowy) - DOKŁADNIE jak w skanerze
+            # Tworzymy picking (dokument magazynowy)
             picking_vals = {
                 'picking_type_id': picking_type,
                 'location_id': source_location,
@@ -23,7 +23,7 @@ def create_stock_move_out(self, product_id, quantity, order_number):
                 [picking_vals]
             )
             
-            # Tworzymy linię ruchu - DOKŁADNIE jak w skanerze
+            # Tworzymy linię ruchu
             move_vals = {
                 'name': f'Skan: out',
                 'product_id': product_id,
@@ -41,27 +41,46 @@ def create_stock_move_out(self, product_id, quantity, order_number):
                 [move_vals]
             )
             
-            # Potwierdzamy picking - DOKŁADNIE jak w skanerze
+            # Potwierdzamy picking
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.picking', 'action_confirm',
                 [picking_id]
             )
             
-            # Ustawiamy ilość do przeniesienia - DOKŁADNIE jak w skanerze
-            self.odoo_models.execute_kw(
-                self.odoo_db, self.odoo_uid, self.odoo_password,
-                'stock.move', 'write',
-                [move_id, {'quantity_done': quantity}]
-            )
+            # PRÓBA 1: quantity_done (jak w skanerze)
+            try:
+                self.odoo_models.execute_kw(
+                    self.odoo_db, self.odoo_uid, self.odoo_password,
+                    'stock.move', 'write',
+                    [move_id, {'quantity_done': quantity}]
+                )
+                print(f"    ✅ quantity_done zadziałało!")
+            except Exception as e1:
+                print(f"    ❌ quantity_done nie działa: {e1}")
+                
+                # PRÓBA 2: quantity
+                try:
+                    self.odoo_models.execute_kw(
+                        self.odoo_db, self.odoo_uid, self.odoo_password,
+                        'stock.move', 'write',
+                        [move_id, {'quantity': quantity}]
+                    )
+                    print(f"    ✅ quantity zadziałało!")
+                except Exception as e2:
+                    print(f"    ❌ quantity też nie działa: {e2}")
+                    
+                    # PRÓBA 3: Pomiń ten krok - od razu waliduj
+                    print(f"    ⚠️ Pomijam ustawienie quantity - próbuję bezpośredniej walidacji")
             
-            # Walidujemy picking - DOKŁADNIE jak w skanerze
+            # Walidujemy picking
             self.odoo_models.execute_kw(
                 self.odoo_db, self.odoo_uid, self.odoo_password,
                 'stock.picking', 'button_validate',
                 [picking_id]
             )
             
+            print(f"    ✅ Picking #{picking_id} zwalidowany")
             return picking_id
             
         except Exception as e:
