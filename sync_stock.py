@@ -1,4 +1,72 @@
-#!/usr/bin/env python3
+def create_stock_move_out(self, product_id, quantity, order_number):
+        """
+        DOSŁOWNA KOPIA funkcji create_stock_move ze skanera - move_type='out'
+        """
+        try:
+            # Zdejmowanie towaru - z magazynu do lokalizacji klienta
+            source_location = self.odoo_location_id
+            dest_location = self.get_customer_location()
+            picking_type = self.get_picking_type('outgoing')
+            
+            # Tworzymy picking (dokument magazynowy) - DOKŁADNIE jak w skanerze
+            picking_vals = {
+                'picking_type_id': picking_type,
+                'location_id': source_location,
+                'location_dest_id': dest_location,
+                'origin': f'Skaner - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+                'state': 'draft',
+            }
+            
+            picking_id = self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.picking', 'create',
+                [picking_vals]
+            )
+            
+            # Tworzymy linię ruchu - DOKŁADNIE jak w skanerze
+            move_vals = {
+                'name': f'Skan: out',
+                'product_id': product_id,
+                'product_uom_qty': quantity,
+                'product_uom': 1,  # Domyślna jednostka miary
+                'picking_id': picking_id,
+                'location_id': source_location,
+                'location_dest_id': dest_location,
+                'state': 'draft',
+            }
+            
+            move_id = self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.move', 'create',
+                [move_vals]
+            )
+            
+            # Potwierdzamy picking - DOKŁADNIE jak w skanerze
+            self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.picking', 'action_confirm',
+                [picking_id]
+            )
+            
+            # Ustawiamy ilość do przeniesienia - DOKŁADNIE jak w skanerze
+            self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.move', 'write',
+                [move_id, {'quantity_done': quantity}]
+            )
+            
+            # Walidujemy picking - DOKŁADNIE jak w skanerze
+            self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'stock.picking', 'button_validate',
+                [picking_id]
+            )
+            
+            return picking_id
+            
+        except Exception as e:
+            print(f"❌ Błąd tworzenia ruchu magazynowego: {e}")
+            return False#!/usr/bin/env python3
 """
 Synchronizacja zamówień WooCommerce z Odoo
 Sprawdza nowe zamówienia i zmniejsza stany magazynowe w Odoo
