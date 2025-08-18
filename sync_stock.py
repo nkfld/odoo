@@ -258,6 +258,22 @@ class WooCommerceOdooSync:
         # BRAK MAPOWANIA = STOP
         print(f"    🛑 BRAK MAPOWANIA dla WC ID {wc_product_id} - POMIJAM PRODUKT")
         return None
+
+    def find_product_in_odoo(self, barcode):
+        """Znajdź produkt w Odoo po kodzie kreskowym"""
+        try:
+            products = self.odoo_models.execute_kw(
+                self.odoo_db, self.odoo_uid, self.odoo_password,
+                'product.product', 'search_read',
+                [[['barcode', '=', str(barcode)]]],
+                {'fields': ['id', 'name', 'barcode']}
+            )
+            
+            return products[0] if products else None
+            
+        except Exception as e:
+            print(f"❌ Błąd wyszukiwania produktu {barcode}: {e}")
+            return None
         """Znajdź produkt w Odoo po kodzie kreskowym"""
         try:
             products = self.odoo_models.execute_kw(
@@ -387,45 +403,24 @@ class WooCommerceOdooSync:
         
         print(f"\n📋 Przetwarzanie zamówienia #{order_number} (ID: {order_id}, Status: {order_status})")
         
-        # Debug - pokaż przykład struktury pierwszego produktu
-        if order['line_items'] and len(order['line_items']) > 0:
-            first_item = order['line_items'][0]
-            print(f"🔍 Debug pierwszego produktu:")
-            print(f"   product_id: {first_item.get('product_id')}")
-            print(f"   variation_id: {first_item.get('variation_id')}")
-            print(f"   name: {first_item.get('name')}")
-            print(f"   meta_data keys: {[m.get('key') for m in first_item.get('meta_data', [])]}")
-        
         results = []
         
         for item in order['line_items']:
-            # Pobierz ID produktu - sprawdź kilka możliwych pól
+            # Używaj tylko product_id
             product_id = item.get('product_id', 0)
-            if product_id == 0:
-                # Spróbuj variation_id dla produktów z wariantami
-                product_id = item.get('variation_id', 0)
-            if product_id == 0:
-                # Ostatnia próba - może w meta_data
-                for meta in item.get('meta_data', []):
-                    if meta['key'] == '_product_id':
-                        product_id = int(meta['value'])
-                        break
-            
             quantity = item['quantity']
             product_name = item['name']
             
-            print(f"  🛍️ Produkt: {product_name}")
-            print(f"      WC ID: {product_id} (product_id: {item.get('product_id')}, variation_id: {item.get('variation_id')})")
-            print(f"      Ilość: {quantity}")
+            print(f"  🛍️ Produkt: {product_name} (WC ID: {product_id}, ilość: {quantity})")
             
-            # Jeśli nadal ID = 0, pomiń produkt
+            # Jeśli ID = 0, pomiń produkt
             if product_id == 0:
                 result = {
                     'success': False,
                     'product_name': product_name,
                     'wc_product_id': 0,
                     'barcode': 'BRAK_ID',
-                    'error': f'Nie można pobrać ID produktu - product_id={item.get("product_id")}, variation_id={item.get("variation_id")}',
+                    'error': f'Product ID = 0 - prawdopodobnie usunięty produkt',
                     'skipped': True
                 }
                 results.append(result)
@@ -520,12 +515,17 @@ class WooCommerceOdooSync:
     def run(self):
         """Główna funkcja synchronizacji"""
         try:
+            # UWAGA: Usuń plik statusu żeby zacząć od nowa
+            if os.path.exists(self.status_file):
+                os.remove(self.status_file)
+                print("🔄 Resetowanie statusu - zaczynam od najnowszych zamówień")
+            
             # Wczytaj ostatni status
             status = self.load_last_sync_status()
-            last_order_id = status.get('last_order_id', 0)
-            processed_orders = status.get('processed_orders', [])
+            last_order_id = 0  # Zacznij od początku
+            processed_orders = []  # Pusta lista
             
-            print(f"📊 Ostatnie przetworzone zamówienie ID: {last_order_id}")
+            print(f"📊 Sprawdzam najnowsze zamówienia processing")
             
             # Połącz z Odoo
             if not self.connect_odoo():
@@ -544,6 +544,14 @@ class WooCommerceOdooSync:
             
             for order in orders:
                 order_id = order['id']
+                order_status = order['status']
+                
+                print(f"\n📦 Sprawdzam zamówienie #{order['number']} (ID: {order_id}, Status: {order_status})")
+                
+                # SPRAWDŹ STATUS - tylko processing
+                if order_status != 'processing':
+                    print(f"⏭️ Pomijam - status '{order_status}' (oczekuję 'processing')")
+                    continue
                 
                 # Pomiń już przetworzone zamówienia
                 if order_id in processed_orders:
