@@ -18,10 +18,10 @@ class WooCommerceOdooSync:
         self.wc_consumer_key = os.getenv('WC_CONSUMER_KEY')
         self.wc_consumer_secret = os.getenv('WC_CONSUMER_SECRET')
         
-        # Odoo config
+        # Odoo config - sprawdź obie możliwe nazwy dla username
         self.odoo_url = os.getenv('ODOO_URL')
         self.odoo_db = os.getenv('ODOO_DB')
-        self.odoo_username = os.getenv('ODOO_USERNAME')
+        self.odoo_username = os.getenv('ODOO_USERNAME') or os.getenv('ODOO_USER')  # Obsługa obu nazw
         self.odoo_password = os.getenv('ODOO_PASSWORD')
         
         # Bezpieczne parsowanie ODOO_LOCATION_ID
@@ -138,23 +138,66 @@ class WooCommerceOdooSync:
         """Połącz z Odoo"""
         try:
             print("🔗 Łączenie z Odoo...")
-            common = xmlrpc.client.ServerProxy(f'{self.odoo_url}/xmlrpc/2/common')
-            self.odoo_uid = common.authenticate(
+            print(f"📍 URL: {self.odoo_url}")
+            print(f"📊 DB: {self.odoo_db}")
+            print(f"👤 User: {self.odoo_username}")
+            
+            # Sprawdź czy wszystkie dane są niepuste
+            if not all([self.odoo_url, self.odoo_db, self.odoo_username, self.odoo_password]):
+                missing = []
+                if not self.odoo_url: missing.append('ODOO_URL')
+                if not self.odoo_db: missing.append('ODOO_DB')
+                if not self.odoo_username: missing.append('ODOO_USERNAME/ODOO_USER')
+                if not self.odoo_password: missing.append('ODOO_PASSWORD')
+                raise Exception(f"Puste zmienne Odoo: {missing}")
+            
+            # Utwórz połączenie z allow_none=True
+            common = xmlrpc.client.ServerProxy(
+                f'{self.odoo_url}/xmlrpc/2/common',
+                allow_none=True
+            )
+            
+            # Sprawdź wersję Odoo (test połączenia)
+            try:
+                version_info = common.version()
+                print(f"📋 Wersja Odoo: {version_info.get('server_version', 'nieznana')}")
+            except Exception as e:
+                print(f"⚠️ Nie można pobrać wersji Odoo: {e}")
+                print(f"🔍 Sprawdź czy Odoo jest dostępny pod adresem: {self.odoo_url}")
+                raise e
+            
+            # Uwierzytelnienie
+            print("🔐 Próba uwierzytelnienia...")
+            auth_result = common.authenticate(
                 self.odoo_db, 
                 self.odoo_username, 
                 self.odoo_password, 
                 {}
             )
             
-            if not self.odoo_uid:
-                raise Exception("Błąd uwierzytelniania w Odoo")
+            print(f"🔍 Wynik uwierzytelnienia: {auth_result}")
             
-            self.odoo_models = xmlrpc.client.ServerProxy(f'{self.odoo_url}/xmlrpc/2/object')
+            if not auth_result:
+                raise Exception("Błąd uwierzytelniania - sprawdź dane logowania (username/password)")
+            
+            self.odoo_uid = auth_result
+            
+            # Utwórz połączenie do modeli
+            self.odoo_models = xmlrpc.client.ServerProxy(
+                f'{self.odoo_url}/xmlrpc/2/object',
+                allow_none=True
+            )
+            
             print(f"✅ Połączono z Odoo (User ID: {self.odoo_uid})")
             return True
             
         except Exception as e:
             print(f"❌ Błąd połączenia z Odoo: {e}")
+            print(f"🔍 Debug info:")
+            print(f"   URL: {self.odoo_url}")
+            print(f"   DB: {self.odoo_db}")
+            print(f"   Username: {self.odoo_username}")
+            print(f"   Password length: {len(self.odoo_password) if self.odoo_password else 0}")
             return False
     
     def get_woocommerce_orders(self, after_order_id=0):
