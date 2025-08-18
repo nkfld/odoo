@@ -420,7 +420,7 @@ class WooCommerceOdooSync:
                     self.odoo_models.execute_kw(
                         self.odoo_db, self.odoo_uid, self.odoo_password,
                         'stock.move.line', 'write',
-                        [line['id'], {'qty_done': quantity}]
+                        [line['id'], {'quantity': quantity}]
                     )
                     print(f"    ✅ Ustawiono qty_done={quantity} na move_line #{line['id']}")
             else:
@@ -432,7 +432,7 @@ class WooCommerceOdooSync:
                     'product_id': product_id,
                     'location_id': source_location,
                     'location_dest_id': dest_location,
-                    'qty_done': quantity,
+                    'quantity': quantity,
                     'product_uom_id': 1
                 }
                 
