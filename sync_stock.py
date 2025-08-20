@@ -249,11 +249,18 @@ class WooCommerceOdooSync:
     def get_barcode_for_wc_key(self, wc_key, _item_meta_data=None):
         key = str(wc_key)
         if key in self.product_mapping:
-            barcode = self.product_mapping[key]
-            print(f"    📋 Mapowanie: WC ID {wc_key} → Odoo {barcode}")
-            return barcode
+            barcodes = self.product_mapping[key]
+            # Obsługa wielu kodów kreskowych oddzielonych przecinkiem, z lub bez spacji
+            if isinstance(barcodes, str):
+                barcode_list = [b.strip() for b in barcodes.replace(';', ',').split(',') if b.strip()]
+            elif isinstance(barcodes, list):
+                barcode_list = [str(b).strip() for b in barcodes if str(b).strip()]
+            else:
+                barcode_list = [str(barcodes).strip()]
+            print(f"    📋 Mapowanie: WC ID {wc_key} → Odoo {barcode_list}")
+            return barcode_list
         print(f"    🛑 BRAK MAPOWANIA dla WC ID {wc_key} – pomijam")
-        return None
+        return []
 
     # -------------------- PRZETWARZANIE --------------------
     def process_order(self, order):
@@ -282,23 +289,29 @@ class WooCommerceOdooSync:
                 results.append({'success': False, 'product_name': product_name, 'skipped': True})
                 continue
 
-            barcode = self.get_barcode_for_wc_key(wc_key, item.get('meta_data', []))
-            if barcode is None:
+            barcodes = self.get_barcode_for_wc_key(wc_key, item.get('meta_data', []))
+            if not barcodes:
                 results.append({'success': False, 'product_name': product_name, 'skipped': True})
                 continue
 
-            odoo_product = self.find_product_in_odoo(barcode)
-            if not odoo_product:
-                results.append({'success': False, 'product_name': product_name})
-                continue
+            any_success = False
+            for barcode in barcodes:
+                odoo_product = self.find_product_in_odoo(barcode)
+                if not odoo_product:
+                    results.append({'success': False, 'product_name': f"{product_name} [{barcode}]"})
+                    continue
+                try:
+                    picking_id = self.create_stock_move_out(odoo_product['id'], quantity, order_number)
+                    results.append({'success': True, 'product_name': odoo_product['name'], 'quantity': quantity, 'picking_id': picking_id})
+                    print(f"    ✅ Utworzono dokument wydania #{picking_id}")
+                    any_success = True
+                except Exception as e:
+                    results.append({'success': False, 'product_name': odoo_product['name'], 'error': str(e)})
+                    print(f"    ❌ Błąd: {e}")
 
-            try:
-                picking_id = self.create_stock_move_out(odoo_product['id'], quantity, order_number)
-                results.append({'success': True, 'product_name': odoo_product['name'], 'quantity': quantity, 'picking_id': picking_id})
-                print(f"    ✅ Utworzono dokument wydania #{picking_id}")
-            except Exception as e:
-                results.append({'success': False, 'product_name': product_name, 'error': str(e)})
-                print(f"    ❌ Błąd: {e}")
+            if not any_success and barcodes:
+                # Jeśli żaden produkt nie został znaleziony, ale były barcodes
+                continue
 
         return results
 
