@@ -39,11 +39,23 @@ def show_wc_odoo_names():
         raise RuntimeError("Nieudane logowanie do Odoo")
     models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
 
-    barcodes = list(mapping.values())
+    # Rozwiń wszystkie barcodes do listy (obsługa wielu kodów na 1 WC ID)
+    all_barcodes = []
+    wc_to_barcodes = {}
+    for wc_id, barcodes in mapping.items():
+        if isinstance(barcodes, str):
+            barcode_list = [b.strip() for b in barcodes.replace(';', ',').split(',') if b.strip()]
+        elif isinstance(barcodes, list):
+            barcode_list = [str(b).strip() for b in barcodes if str(b).strip()]
+        else:
+            barcode_list = [str(barcodes).strip()]
+        wc_to_barcodes[wc_id] = barcode_list
+        all_barcodes.extend(barcode_list)
+
     odoo_products = models.execute_kw(
         odoo_db, uid, odoo_pwd,
         'product.product', 'search_read',
-        [[['barcode', 'in', barcodes]]],
+        [[['barcode', 'in', all_barcodes]]],
         {'fields': ['barcode', 'name']}
     )
     odoo_map = {p['barcode']: p['name'] for p in odoo_products if p.get('barcode')}
@@ -51,10 +63,13 @@ def show_wc_odoo_names():
     # --- Wypisz pary nazw
     print("Woo → Odoo")
     print("----------")
-    for wc_id, barcode in mapping.items():
+    for wc_id, barcode_list in wc_to_barcodes.items():
         wc_name = wc_products.get(str(wc_id), "❌ brak w Woo")
-        odoo_name = odoo_map.get(barcode, "❌ brak w Odoo")
-        print(f"{wc_name}  →  {odoo_name}")
+        pairs = []
+        for barcode in barcode_list:
+            odoo_name = odoo_map.get(barcode, "❌ brak w Odoo")
+            pairs.append(f"[{barcode}]  →  {odoo_name}")
+        print(f"{wc_name} " + "  ".join(pairs))
 
 if __name__ == "__main__":
     show_wc_odoo_names()
