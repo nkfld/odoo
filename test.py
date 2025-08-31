@@ -69,7 +69,7 @@ def show_wc_odoo_names():
         for barcode in barcode_list:
             odoo_name = odoo_map.get(barcode, "❌ brak w Odoo")
             pairs.append(f"[{barcode}]  →  {odoo_name}")
-        print(f"{wc_name} " + "  ".join(pairs))
+        print(f"{wc_name} || " + "  ".join(pairs))
 
 if __name__ == "__main__":
     show_wc_odoo_names()
